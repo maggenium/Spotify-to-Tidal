@@ -19,6 +19,7 @@ state = None # global variable to store state
 SPOTIFY_BASE_URL = "https://api.spotify.com/v1"
 SPOTIFY_RETRY_AFTER = 5  # Default retry time for Spotify rate limiting
 
+# Handles the redirect from Spotify after user authorization
 class SpotifyAuthHandler(BaseHTTPRequestHandler):
     # overwrites do_GET method to handle the redirect from Spotify
     def do_GET(self):
@@ -43,6 +44,8 @@ class SpotifyAuthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Missing code or state parameter.")
 
+# Opens the browser to let the user authorize the app
+# Returns the authorization code or None if the user did not authorize
 def spotifyGetUserAuthorizationCode():
     # open the browser to let the user authorize the app
     global state
@@ -65,7 +68,8 @@ def spotifyGetUserAuthorizationCode():
     server.handle_request()  # Handles a single request, then exits
     return getattr(server, "code", None)
 
-
+# Sends a request to Spotify to get an access token using the authorization code
+# Returns the access token (else None)
 def spotifyGetAccessToken(code):
     url = "https://accounts.spotify.com/api/token"
     data = {
@@ -89,7 +93,7 @@ def spotifyGetAccessToken(code):
         print("Failed to retrieve token:", response.status_code)
     return None
 
-
+# Retrieves the user ID from Spotify using the access token
 def spotifyGetUserID(token):
     url = f"{SPOTIFY_BASE_URL}/me"
     headers = {"Authorization": f"Bearer {token}"}
@@ -100,7 +104,8 @@ def spotifyGetUserID(token):
         print("Failed to retrieve user ID:", response.status_code)
         return None
     
-    
+# Retrieves all playlists of the signed in user from Spotify using the access token
+# Returns a generator that yields playlists
 def spotifyGetPlaylists(token):
     limit = 50
     offset = 0
@@ -127,6 +132,8 @@ def spotifyGetPlaylists(token):
             print("Failed to retrieve playlists:", response.status_code)
             break
         
+# Retrieves all tracks of a specific playlist from Spotify using the access token
+# Returns a generator that yields tracks
 def spotifyGetSpecificPlaylistTracks(token, playlistID):
     limit = 50
     offset = 0
@@ -166,7 +173,9 @@ def spotifyGetSpecificPlaylistTracks(token, playlistID):
 #             print(f"{track['track']['name']} by {track['track']['artists'][0]['name']}")
 
 
-
+# Saves the playlists with tracks to a JSON file
+# Each playlist is a dictionary with the playlist name and a list of tracks
+# Returns None
 def savePlaylistsToJson(token, filename, playlists):
     playlistsWithTracks = []
     for playlist in playlists:
@@ -196,6 +205,7 @@ TIDAL_BASE_URL = "https://openapi.tidal.com/v2"
 randomOctetSequence = os.urandom(32)
 codeVerifier = base64.urlsafe_b64encode(randomOctetSequence).decode("utf-8").rstrip("=")
 
+# Handles the redirect from TIDAL after user authorization
 class TidalAuthHandler(BaseHTTPRequestHandler):
     # overwrites do_GET method to handle the redirect from TIDAL
     def do_GET(self):
@@ -272,6 +282,7 @@ def tidalGetAccessToken(code):
     else:
         print("Failed to retrieve token:", response.status_code)
 
+# Sends a request to TIDAL to search for a track
 # Returns all data of track search result (else None)
 def tidalSearchForTrack(token, trackName, artistNames):
     query = urllib.parse.quote(f"{trackName} {' '.join(artistNames)}").replace("/", "%2F")
@@ -307,7 +318,8 @@ def tidalSearchForTrack(token, trackName, artistNames):
         print(json.dumps(response.json(), indent=2))
     return None
 
-# Creates a TIDAL Playlist and returns its ID
+# Creates a TIDAL Playlist
+# Returns the playlist ID if successful (else None)
 def tidalCreatePlaylist(token, playlistName):
     url = f"{TIDAL_BASE_URL}/playlists"
     headers = {"Authorization": f"Bearer {token}"}
@@ -329,7 +341,8 @@ def tidalCreatePlaylist(token, playlistName):
         print("Failed to create playlist:", response.status_code)
         print(json.dumps(response.json(), indent=2))
 
-# Fills a TIDAL playlist with tracks (return None)
+# Fills a TIDAL playlist with tracks
+# Returns None
 def tidalFillPlaylistWithTracks(token, playlistId, trackIdList, playlistName=None):
     print(f"Adding {len(trackIdList)} tracks...")
     if trackIdList:
@@ -423,7 +436,7 @@ def tidalFillPlaylistWithTracks(token, playlistId, trackIdList, playlistName=Non
                 print("Playlist population aborted for playlist:", playlist["playlist_name"])
                 abortOperation = True
                 break
-        tidalFillPlaylistWithTracks(tidalAccessToken, tidalPlaylistId, returnedTrackIdList)
+        tidalFillPlaylistWithTracks(tidalAccessToken, tidalPlaylistId, returnedTrackIdList, playlist["playlist_name"])
         if abortOperation:
             print("Aborting operation due to fundamental search error.")
             break
