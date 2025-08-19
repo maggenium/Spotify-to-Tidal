@@ -12,12 +12,19 @@ import time
 
 load_dotenv()
 
-## SPOTIFY
-
+# Spotify global variables
 REDIRECT_URI = "http://127.0.0.1:8000/callback"
 state = None # global variable to store state
 SPOTIFY_BASE_URL = "https://api.spotify.com/v1"
 SPOTIFY_RETRY_AFTER = 5  # Default retry time for Spotify rate limiting
+
+# Tidal global variables
+TIDAL_REDIRECT_URI = "http://127.0.0.1:3000/callback"
+TIDAL_BASE_URL = "https://openapi.tidal.com/v2"
+randomOctetSequence = os.urandom(32)
+codeVerifier = base64.urlsafe_b64encode(randomOctetSequence).decode("utf-8").rstrip("=")
+
+## SPOTIFY
 
 # Handles the redirect from Spotify after user authorization
 class SpotifyAuthHandler(BaseHTTPRequestHandler):
@@ -200,11 +207,6 @@ def savePlaylistsToJson(token, filename, playlists):
 
 ## TIDAL
 
-TIDAL_REDIRECT_URI = "http://127.0.0.1:3000/callback"
-TIDAL_BASE_URL = "https://openapi.tidal.com/v2"
-randomOctetSequence = os.urandom(32)
-codeVerifier = base64.urlsafe_b64encode(randomOctetSequence).decode("utf-8").rstrip("=")
-
 # Handles the redirect from TIDAL after user authorization
 class TidalAuthHandler(BaseHTTPRequestHandler):
     # overwrites do_GET method to handle the redirect from TIDAL
@@ -373,7 +375,7 @@ def tidalFillPlaylistWithTracks(token, playlistId, trackIdList, playlistName=Non
 
 
 ## MAIN EXECUTION
-# if __name__ == "__main__":
+if __name__ == "__main__":
     
     # Log in to Spotify and get playlists
     spotifyAuthorizationCode = spotifyGetUserAuthorizationCode()
