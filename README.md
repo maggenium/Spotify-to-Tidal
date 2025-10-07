@@ -36,8 +36,8 @@ It uses the official **Spotify Web API** and **TIDAL OpenAPI** to:
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/yourusername/spotify-to-tidal.git
-cd spotify-to-tidal
+git clone https://github.com/maggenium/Spotify-to-Tidal.git
+cd Spotify-to-Tidal
 pip install -r requirements.txt
 ```
 
