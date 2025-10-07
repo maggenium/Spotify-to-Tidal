@@ -1,4 +1,20 @@
 import requests
+# Patch requests.get and requests.post to always use a timeout of 20 seconds if not specified
+_original_get = requests.get
+_original_post = requests.post
+
+def _get_with_timeout(*args, **kwargs):
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = 20
+    return _original_get(*args, **kwargs)
+
+def _post_with_timeout(*args, **kwargs):
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = 20
+    return _original_post(*args, **kwargs)
+
+requests.get = _get_with_timeout
+requests.post = _post_with_timeout
 import json
 from dotenv import load_dotenv
 import os
@@ -9,14 +25,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import base64
 import hashlib
 import time
+import platform
 
 load_dotenv()
 
 # Spotify global variables
 REDIRECT_URI = "http://127.0.0.1:8000/callback"
-state = None # global variable to store state
+state = None # to store the state parameter for CSRF protection
 SPOTIFY_BASE_URL = "https://api.spotify.com/v1"
-SPOTIFY_RETRY_AFTER = 5  # Default retry time for Spotify rate limiting
+SPOTIFY_RETRY_AFTER = 5  # default retry time for Spotify rate limiting
 
 # Tidal global variables
 TIDAL_REDIRECT_URI = "http://127.0.0.1:3000/callback"
@@ -39,7 +56,7 @@ class SpotifyAuthHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
-                self.wfile.write(b"<html><body><h1>Spotify authorization successful!</h1>You can close this window.</body></html>")
+                self.wfile.write(b"<html><body><h1>Spotify authorization successful!</h1>You can close this window and return to console.</body></html>")
                 #print(f"Handler got authorization code: {code}")
                 self.server.code = code
             else:
@@ -50,6 +67,9 @@ class SpotifyAuthHandler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"Missing code or state parameter.")
+            
+    def log_message(self, format, *args):
+        pass  # Suppress logging to console
 
 # Opens the browser to let the user authorize the app
 # Returns the authorization code or None if the user did not authorize
@@ -57,7 +77,7 @@ def spotifyGetUserAuthorizationCode():
     # open the browser to let the user authorize the app
     global state
     url = "https://accounts.spotify.com/authorize"
-    scope = "playlist-read-private"
+    scope = "playlist-read-private user-library-read"
     state = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=16))
     params = {
         "client_id": os.getenv("SPOTIFY_CLIENT_ID"),
@@ -67,9 +87,7 @@ def spotifyGetUserAuthorizationCode():
         "scope": scope,
     }
     auth_url = f"{url}?{urllib.parse.urlencode(params)}"
-    webbrowser.open(auth_url)
-    print("Please authorize the app in your browser.")
-    
+    webbrowser.open(auth_url)    
      # Start local server to catch the redirect
     server = HTTPServer(("127.0.0.1", 8000), SpotifyAuthHandler)
     server.handle_request()  # Handles a single request, then exits
@@ -97,7 +115,7 @@ def spotifyGetAccessToken(code):
         #print(json.dumps(response.json(), indent=2))
         return token
     else:
-        print("Failed to retrieve token:", response.status_code)
+        print("Failed to retrieve Spotify access token. Error status code: ", response.status_code)
     return None
 
 # Retrieves the user ID from Spotify using the access token
@@ -179,6 +197,33 @@ def spotifyGetSpecificPlaylistTracks(token, playlistID):
 #         for track in tracks:
 #             print(f"{track['track']['name']} by {track['track']['artists'][0]['name']}")
 
+def spotifyGetUserSavedTracks(token):
+    limit = 50
+    offset = 0
+    total = -1
+    url = f"{SPOTIFY_BASE_URL}/me/tracks"
+    headers = {"Authorization": f"Bearer {token}"}
+    while (total == -1 or offset < total):
+        params = {
+            "limit": limit,
+            "offset": offset
+        }
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            total = data["total"]
+            offset += limit
+            yield from data["items"]
+        elif response.status_code == 429:
+            waitTime = SPOTIFY_RETRY_AFTER
+            print(f"Spotify rate limit exceeded. Retrying after {waitTime} seconds...")
+            time.sleep(waitTime)
+            return spotifyGetUserSavedTracks(token)
+        else:
+            print("Failed to retrieve user saved tracks:", response.status_code)
+            break
+    if total == 0:
+        print(f"No user saved tracks found.")
 
 # Saves the playlists with tracks to a JSON file
 # Each playlist is a dictionary with the playlist name and a list of tracks
@@ -195,15 +240,26 @@ def savePlaylistsToJson(token, filename, playlists):
                     "track_name": track["track"]["name"],
                     "artist_name": track["track"]["artists"]
                 }
-                for track in tracks if track.get("track")
+                for track in tracks if track.get("track") # if tracks is not None
+            ]
+        })
+    userSavedTracks = list(spotifyGetUserSavedTracks(token))
+    if userSavedTracks:
+        tracks = userSavedTracks
+        print(f"App received user's saved tracks: {len(tracks)} tracks")
+        playlistsWithTracks.append({
+            "playlist_name": "Spotify Liked Songs",
+            "tracks": [
+                {
+                    "track_name": track["track"]["name"],
+                    "artist_name": track["track"]["artists"]
+                }
+                for track in tracks if track.get("track") # if tracks is not None
             ]
         })
     with open(f"{filename}.json", "w") as f:
         json.dump(playlistsWithTracks, f, indent=2)
     print(f"Playlists saved to {filename}.json")
-
-# savePlaylistsToFile(playlists)
-
 
 ## TIDAL
 
@@ -231,6 +287,9 @@ class TidalAuthHandler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"Missing code or state parameter.")
+        
+    def log_message(self, format, *args):
+        pass  # Suppress logging to console
 
 # Opens the browser to let the user authorize the app
 # Returns the authorization code or None if the user did not authorize
@@ -377,44 +436,96 @@ def tidalFillPlaylistWithTracks(token, playlistId, trackIdList, playlistName=Non
 ## MAIN EXECUTION
 if __name__ == "__main__":
     
+    input("Welcome to Spotify to TIDAL. Press any key to continue to Spotify login in browser: ")
     # Log in to Spotify and get playlists
     spotifyAuthorizationCode = spotifyGetUserAuthorizationCode()
-    #print(f"App received code: {spotifyAuthorizationCode}")
+    while(spotifyAuthorizationCode == None):
+        cmdinput = input("Spotify authorization failed. Do you want to try again? (y/n)")
+        match cmdinput:
+            case "n" | "N":
+                print("Exiting.")
+                exit()
+            case _:
+                spotifyAuthorizationCode = spotifyGetUserAuthorizationCode()
+            
     spotifyAccessToken = spotifyGetAccessToken(spotifyAuthorizationCode)
-    #print(f"App received access token: {spotifyAccessToken}")
-    # spotifyUserID = spotifyGetUserID(spotifyAccessToken)
-    #print(f"App received user ID: {spotifyUserID}")
+    if spotifyAccessToken == None:
+        print("Spotify authorization failed. Exiting.")
+        exit()
+
+    print("Spotify login successful. Loading playlists (this may take a while)...")
     spotifyPlaylists = list(spotifyGetPlaylists(spotifyAccessToken))
     playlistNames = [playlist["name"] for playlist in spotifyPlaylists]
-    print(f"App received playlists from Spotify: {playlistNames}")
+    print(f"App received the following playlists from Spotify:")
+    for i in range(len(playlistNames)):
+        print(f"{i} - {playlistNames[i]}")
 
-    blacklist = ["Hörbuch Lesezeichen",
-                "Shaved Fish LP",
-                "Linkin Park 2024",
-                "Wuma 2024",
-                "2024 Januar 1 (keys: B, G, A, C#, C)",
-                "to buy",
-                "SPFDJ Hör Berlin Set",
-                "Another Dimension"]
-    playlists = [playlist for playlist in spotifyPlaylists if playlist["name"] not in blacklist]
+    cmdinput = input("Do you want to import all playlists (1) or specific ones (2)?: ")
+    whitelist = []
+    blacklist = []
+    match cmdinput:
+        case "2": # select specific playlists
+            cmdinput = input("Do you want to include (1) or exclude (2) specific playlists?: ")
+            match cmdinput:
+                case "1": # whitelist playlists
+                    cmdinput = input("Enter the index numbers of the playlists you want to include (comma separated):\n")
+                    whitelist = sorted(set(int(x.strip()) for x in cmdinput.split(",") if x.strip().isdigit() and int(x.strip()) < len(playlistNames)))
+                case "2": # blacklist playlists
+                    cmdinput = input("Enter the index numbers of the playlists you want to exclude (comma separated):\n")
+                    blacklist = sorted(set(int(x.strip()) for x in cmdinput.split(",") if x.strip().isdigit() and int(x.strip()) < len(playlistNames)))
+        case _:
+            pass
+            #continue, select all playlists default
+            
+    if (whitelist):
+        print("\nThe following playlists have been selected for import:")
+        for i in range(len(playlistNames)):
+            if i in whitelist:
+                print(f"{i} - {playlistNames[i]}")
+        playlists = [playlist for i, playlist in enumerate(spotifyPlaylists) if i in whitelist]
+    elif (blacklist):
+        print("\nThe following playlists have been excluded from import:")
+        for i in range(len(playlistNames)):
+            if i in blacklist:
+                print(f"{i} - {playlistNames[i]}")
+                
+        print("\nThe following playlists will be imported:")
+        for i in range(len(playlistNames)):
+            if i not in blacklist:
+                print(f"{i} - {playlistNames[i]}")
+        playlists = [playlist for i, playlist in enumerate(spotifyPlaylists) if i not in blacklist]
+    else:
+        print("\nAll playlists will be transferred.")
+        playlists = spotifyPlaylists
+
+    cmdinput = input("Continue? (y/n): ")
+    if cmdinput.lower() != "y":
+        print("Exiting.")
+        exit()
+    print("Loading tracks from Spotify playlists (this may take a while)...")
     savePlaylistsToJson(spotifyAccessToken, "playlists3", playlists)
-    # playlistNames = [playlist["name"] for playlist in playlists]
-    # print(playlistNames)
     
     ## Load playlists from file
     loadedPlaylists = []
     with open("playlists3.json", "r") as f:
         loadedPlaylists = json.load(f)
-    #!--------------
-    # del loadedPlaylists[0:30] # ignores the first 30 playlists!
-    #!--------------
-    # playlistNames = [playlist["playlist_name"] for playlist in loadedPlaylists]
-    # print(playlistNames)
     
     ## Log in to TIDAL, create playlists and fill them with tracks
+    input("Press any key to continue to TIDAL login in browser: ")
     tidalAuthorizationCode = tidalGetUserAuthorizationCode()
+    if tidalAuthorizationCode == None:
+        print("TIDAL authorization failed. Exiting.")
+        exit()
     [tidalAccessToken, userID] = tidalGetAccessToken(tidalAuthorizationCode)
+    cmdinput = input("TIDAL login successful. Do you want to start transferring playlists now? (y/n): ")
+    if cmdinput.lower() != "y":
+        print("Exiting.")
+        exit()
+    for seconds in range(5, 0, -1):
+        print(f"Starting transfer in {seconds}...", end="\r")
+        time.sleep(1)
     abortOperation = False
+    tracksNotFound = False
     for playlist in loadedPlaylists:
         tidalPlaylistId = tidalCreatePlaylist(tidalAccessToken, playlist["playlist_name"])
         print(f"Created Tidal playlist: {playlist['playlist_name']}")
@@ -433,6 +544,7 @@ if __name__ == "__main__":
                     # print(json.dumps(searchResult, indent=2))
                     with open("tidal_not_found.txt", "a", encoding="utf-8") as f:
                         f.write(f"In playlist {playlist["playlist_name"]}: {track['track_name']} by {', '.join([artist['name'] for artist in track['artist_name']])}\n")
+                    tracksNotFound = True
             else:
                 print("Search failed for track:", track["track_name"])
                 print("Playlist population aborted for playlist:", playlist["playlist_name"])
@@ -441,13 +553,48 @@ if __name__ == "__main__":
         tidalFillPlaylistWithTracks(tidalAccessToken, tidalPlaylistId, returnedTrackIdList, playlist["playlist_name"])
         if abortOperation:
             print("Aborting operation due to fundamental search error.")
-            break
+            exit()
     print("Tidal playlist population completed.")
+    if tracksNotFound:
+        cmdinput = input("Some tracks were not found. Do you want to open the tidal_not_found.txt file? (y/n): ")
+        if cmdinput.lower() == "y":
+            if platform.system() == "Windows":
+                os.startfile("tidal_not_found.txt")
+            elif platform.system() == "Darwin":  # macOS
+                os.system(f"open tidal_not_found.txt")
+            elif platform.system() == "Linux":
+                os.system(f"xdg-open tidal_not_found.txt")
+        exit()
+    input("Press Enter to exit.")
+    
+    
+    # - Welcome message and asking the user to log in to Spotify to authorize the app
+    # - (Enter to continue and redirect to Spotify login in browser)
+    # - After login, ask user to close browser tab and return to console
+    # - print out all playlists, INCLUDING LIKED SONGS, with index numbers
+    # - Ask user if they want to migrate all playlists or only specific ones
+    # - Ask if they want to include or exclude specific playlists
+    # - Tell them to enter the index numbers of the playlists they want to include
+    #   or exclude in migration (comma separated)
+    # - Ask user to log in to Tidal to authorize the app
+    # - (Enter to continue and redirect to Tidal login in browser)
+    # - After login, ask user to close browser tab and return to console
+    # - After short delay, start migration and print progress in console
+    # - Print out a summary of the migration (number of playlists, number of tracks, number of tracks not found)
+    # - Ask if they want to open the tidal_not_found.txt file in default text editor
+    # - Tell them to press Enter to exit the app
+    
+    
     
     ## FURTHER DEVELOPMENT
-    # - Make it user friendly (e.g. command line arguments)
+    # + Make it user friendly (e.g. command line arguments)
+    # + Import Spotify liked songs
+    # - Give option to not import liked songs
+    # - Use just first 2 artists for track search (to avoid issues with long artist lists)
+    # - Add 429 too many requests handling for every request
     # - Add error handling
     # - Add blacklist/whitelist functionality
     # - Ask if the user wants to create a new playlist or fill an existing one if playlist already exists
     # - Make a UI
     #   - add a progress bar
+    #   - make track search more verbose
